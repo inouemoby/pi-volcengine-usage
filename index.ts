@@ -265,8 +265,8 @@ export default function (pi: ExtensionAPI) {
   pi.on("thinking_level_select", async (event: any) => { thinkingLevel = event.level || "off"; trigger(); });
   pi.on("agent_end", async (_e, ctx) => { if (hasSession()) refresh(ctx); });
 
-  // ── /volcengine-usage ──────────────────────────────────────────
-  pi.registerCommand("volcengine-usage", {
+  // ── /volcengine ───────────────────────────────────────────────
+  pi.registerCommand("volcengine", {
     description: "Show Volcengine Coding Plan usage",
     handler: async (_args, ctx) => {
       try {
@@ -291,8 +291,8 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // ── /volcengine-usage-login ────────────────────────────────────
-  pi.registerCommand("volcengine-usage-login", {
+  // ── /volcengine-login ────────────────────────────────────────
+  pi.registerCommand("volcengine-login", {
     description: "Open browser to log in to Volcengine console",
     handler: async (_args, ctx) => {
       ctx.ui.notify("Opening browser for login...", "info");
@@ -344,8 +344,8 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // ── /volcengine-usage-logout ───────────────────────────────────
-  pi.registerCommand("volcengine-usage-logout", {
+  // ── /volcengine-logout ───────────────────────────────────────
+  pi.registerCommand("volcengine-logout", {
     description: "Clear saved session",
     handler: async (_args, ctx) => {
       const sessionPath = getSessionPath();
