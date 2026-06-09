@@ -63,7 +63,6 @@ Browser session state (cookies + localStorage) is stored globally at `~/.pi/agen
 
 - [pi-zai-usage](https://github.com/inouemoby/pi-zai-usage) — Same tool for ZAI (智谱/bigmodel.cn)
 - [pi-ollama-usage](https://github.com/inouemoby/pi-ollama-usage) — Same tool for Ollama Cloud
-- [pi-volcengine](https://github.com/inouemoby/pi-volcengine) — Volcengine (火山引擎/火山方舟) provider for pi
 
 ## License
 
