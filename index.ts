@@ -1,5 +1,5 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { chromium } from "playwright";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "fs";
@@ -38,6 +38,14 @@ function humanDuration(untilMs: number): string {
   return `${m % 60}m`;
 }
 
+function formatTokens(count: number): string {
+  if (count < 1000) return String(count);
+  if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
+  if (count < 1e6) return `${Math.round(count / 1000)}k`;
+  if (count < 1e7) return `${(count / 1e6).toFixed(1)}M`;
+  return `${Math.round(count / 1e6)}M`;
+}
+
 const LEVEL_LABELS: Record<string, string> = {
   session: "5h",
   weekly: "Wk",
@@ -50,7 +58,7 @@ const LEVEL_WINDOWS: Record<string, number> = {
   monthly: 30 * 24 * 60 * 60 * 1000,
 };
 
-/** Returns severity: 0=normal, 1=above expected, 2=critical */
+/** Returns severity level: 0=normal, 1=above expected, 2=critical */
 function usageSeverity(pct: number, level: string, resetTimestamp: number): number {
   if (resetTimestamp <= 0) return 0; // no active window
   const windowMs = LEVEL_WINDOWS[level] || 5 * 60 * 60 * 1000;
@@ -60,7 +68,7 @@ function usageSeverity(pct: number, level: string, resetTimestamp: number): numb
   const expectedPct = elapsedRatio * 100;
 
   if (pct > expectedPct * 1.5) return 2;
-  if (pct > expectedPct) return 1;
+  if (pct > expectedPct)      return 1;
   return 0;
 }
 
@@ -80,7 +88,7 @@ async function fetchUsage(): Promise<UsageData> {
 
     await page.goto("https://console.volcengine.com", {
       waitUntil: "domcontentloaded",
-      timeout: 10000,
+      timeout: 15000,
     });
 
     const result = await page.evaluate(async () => {
@@ -103,7 +111,6 @@ async function fetchUsage(): Promise<UsageData> {
     if (result.ResponseMetadata?.Error) {
       const code = result.ResponseMetadata.Error.Code;
       if (code === "NotLogin" || code === "NotLogged") {
-        // Session expired — delete it
         if (existsSync(sessionPath)) unlinkSync(sessionPath);
         throw new Error("Session expired. Run /volcengine-usage-login to re-login.");
       }
@@ -130,21 +137,46 @@ export default function (pi: ExtensionAPI) {
   let footerOn = false;
   let _tui: any = null;
   let thinkingLevel = "off";
-  let footerCtx: any = null;
 
-  function formatTokens(count: number): string {
-    if (count < 1000) return String(count);
-    if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
-    if (count < 1e6) return `${Math.round(count / 1000)}k`;
-    if (count < 1e7) return `${(count / 1e6).toFixed(1)}M`;
-    return `${Math.round(count / 1e6)}M`;
+  async function getUsage(): Promise<UsageData> {
+    if (usage && Date.now() - usage._ts < CACHE_MS) return usage;
+    usage = await fetchUsage();
+    return usage;
+  }
+
+  function isVolcenginePlan(ctx: any) {
+    return ctx.model?.provider === "volcengine-plan";
   }
 
   function trigger() { if (_tui) setTimeout(() => _tui.requestRender?.(), 0); }
 
-  // ── Footer (only shows cached data — no auto-fetch) ────────
-  function buildFooter() {
-    const ctx = footerCtx;
+  // ── Refresh ─────────────────────────────────────────────────
+  async function refresh(ctx: any) {
+    if (!hasSession()) return;
+    if (!isVolcenginePlan(ctx)) {
+      if (usage) { usage = null; toggleFooter(ctx); }
+      return;
+    }
+    try { await getUsage(); trigger(); } catch { /* silent */ }
+  }
+
+  // ── Footer ──────────────────────────────────────────────────
+  function toggleFooter(ctx: any) {
+    if (isVolcenginePlan(ctx) && hasSession()) {
+      if (!footerOn) {
+        ctx.ui.setFooter(buildFooter(ctx));
+        footerOn = true;
+      }
+    } else {
+      if (footerOn) {
+        _tui = null;
+        ctx.ui.setFooter(undefined as any);
+        footerOn = false;
+      }
+    }
+  }
+
+  function buildFooter(ctx: any) {
     return (tui: any, theme: any, fd: any) => {
       _tui = tui;
       const unsub = fd.onBranchChange(() => tui.requestRender());
@@ -165,6 +197,7 @@ export default function (pi: ExtensionAPI) {
           const ln1 = truncateToWidth(theme.fg("dim", pwd), width, theme.fg("dim", "..."));
 
           // ── Line 2: stats ────────────────────────────────
+          // Token counts (only ↑↓ and $, no R/W/CH%)
           let ti = 0, to = 0, tc = 0;
           for (const e of sm.getEntries()) {
             if (e.type === "message" && e.message?.role === "assistant") {
@@ -178,14 +211,14 @@ export default function (pi: ExtensionAPI) {
           if (to) parts.push(`↓${formatTokens(to)}`);
           if (tc) parts.push(`$${tc.toFixed(3)}`);
 
-          // Volcengine Coding Plan usage (cached data only)
+          // Volcengine Coding Plan usage
           if (usage) {
             for (const q of usage.quotas) {
               if (q.resetTimestamp <= 0) continue; // skip no active window
               const label = LEVEL_LABELS[q.level] || q.level;
               const sev = usageSeverity(q.percent, q.level, q.resetTimestamp);
               const flag = sev === 2 ? "!!" : sev === 1 ? "!" : "";
-              parts.push(`${flag}${label}:${Math.round(q.percent * 10) / 10}%`);
+              parts.push(`${flag}${label}:${q.percent}%`);
             }
           }
 
@@ -221,51 +254,37 @@ export default function (pi: ExtensionAPI) {
     };
   }
 
-  function updateFooter(ctx: any) {
-    footerCtx = ctx;
-    if (!footerOn) {
-      ctx.ui.setFooter(buildFooter());
-      footerOn = true;
-    } else {
-      trigger();
-    }
-  }
-
-  // ── Events (no auto-fetch — only /volcengine-usage command launches browser) ──
-  pi.on("session_start", async (_e, _ctx) => {
+  // ── Events (auto-refresh) ─────────────────────────────────
+  pi.on("session_start", async (_e, ctx) => {
     thinkingLevel = pi.getThinkingLevel?.() || "off";
+    toggleFooter(ctx);
+    if (hasSession()) refresh(ctx);
   });
 
-  pi.on("thinking_level_select", async (event: any) => {
-    thinkingLevel = event.level || "off";
-  });
+  pi.on("model_select", async (_e, ctx) => { toggleFooter(ctx); if (hasSession()) refresh(ctx); });
+  pi.on("thinking_level_select", async (event: any) => { thinkingLevel = event.level || "off"; trigger(); });
+  pi.on("agent_end", async (_e, ctx) => { if (hasSession()) refresh(ctx); });
 
   // ── /volcengine-usage ──────────────────────────────────────────
   pi.registerCommand("volcengine-usage", {
     description: "Show Volcengine Coding Plan usage",
     handler: async (_args, ctx) => {
       try {
-        usage = await fetchUsage();
+        const d = await getUsage();
         const lines = ["══ Volcengine Coding Plan Usage ══"];
-        for (const q of usage.quotas) {
+        for (const q of d.quotas) {
           const label = LEVEL_LABELS[q.level] || q.level;
-          const pct = Math.round(q.percent * 10) / 10;
           const bar =
-            "█".repeat(Math.min(20, Math.round(pct / 5))) +
-            "░".repeat(Math.max(0, 20 - Math.round(pct / 5)));
-          // ResetTimestamp: -1 means no active window
+            "█".repeat(Math.min(20, Math.round(q.percent / 5))) +
+            "░".repeat(Math.max(0, 20 - Math.round(q.percent / 5)));
           if (q.resetTimestamp > 0) {
-            const sev = usageSeverity(pct, q.level, q.resetTimestamp);
-            const flag = sev === 2 ? "!!" : sev === 1 ? "!" : "";
             const resetStr = humanDuration(q.resetTimestamp * 1000 - Date.now());
-            lines.push(`${flag}${label}  ${bar}  ${pct}%  resets ${resetStr}`);
+            lines.push(`${label}  ${bar}  ${q.percent}%  resets ${resetStr}`);
           } else {
-            lines.push(`${label}  ${bar}  ${pct}%  (no active window)`);
+            lines.push(`${label}  ${bar}  ${q.percent}%  (no active window)`);
           }
         }
         ctx.ui.notify(lines.join("\n"), "info");
-        // Update footer with fresh data
-        updateFooter(ctx);
       } catch (err: any) {
         ctx.ui.notify(`Volcengine Usage: ${err.message}`, "error");
       }
@@ -300,6 +319,9 @@ export default function (pi: ExtensionAPI) {
         writeFileSync(sessionPath, JSON.stringify(state, null, 2));
         await browser.close();
         ctx.ui.notify("✓ Already logged in! Session saved.", "success");
+        usage = null;
+        toggleFooter(ctx);
+        refresh(ctx);
         return;
       }
 
@@ -316,6 +338,9 @@ export default function (pi: ExtensionAPI) {
 
       await browser.close();
       ctx.ui.notify("✓ Login complete! Session saved.", "success");
+      usage = null;
+      toggleFooter(ctx);
+      refresh(ctx);
     },
   });
 
@@ -330,10 +355,8 @@ export default function (pi: ExtensionAPI) {
         ctx.ui.setFooter(undefined as any);
         footerOn = false;
         _tui = null;
-        footerCtx = null;
       }
       ctx.ui.notify("✓ Session cleared.", "success");
     },
   });
-
 }
