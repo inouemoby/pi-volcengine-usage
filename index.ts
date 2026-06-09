@@ -211,6 +211,16 @@ export default function (pi: ExtensionAPI) {
           if (to) parts.push(`↓${formatTokens(to)}`);
           if (tc) parts.push(`$${tc.toFixed(3)}`);
 
+          // Context % (without color, just show it)
+          const cu = ctx.getContextUsage();
+          const cw = cu?.contextWindow ?? ctx.model?.contextWindow ?? 0;
+          const raw = cu?.percent;
+          const cp = raw !== null && raw !== undefined ? raw.toFixed(1) : "?";
+          let cpStr: string;
+          if (cp === "?") cpStr = `?/${formatTokens(cw)} (auto)`;
+          else cpStr = `${cp}%/${formatTokens(cw)} (auto)`;
+          parts.push(cpStr);
+
           // Volcengine Coding Plan usage
           if (usage) {
             for (const q of usage.quotas) {
