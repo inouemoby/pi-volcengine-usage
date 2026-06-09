@@ -2,7 +2,13 @@
   "name": "pi-volcengine-usage",
   "version": "1.0.0",
   "description": "Volcengine Coding Plan usage tracking for pi",
-  "main": "index.ts",
-  "pi": { "type": "extension" },
-  "dependencies": { "playwright": "^1.54.0" }
+  "keywords": ["pi-package"],
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "dependencies": { "playwright": "^1.54.0" },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-tui": "*"
+  }
 }

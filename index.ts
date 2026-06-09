@@ -1,6 +1,4 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { chromium } from "playwright";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "fs";
 import { join, dirname } from "path";
@@ -126,152 +124,15 @@ async function fetchUsage(): Promise<UsageData> {
 export default function (pi: ExtensionAPI) {
   let usage: UsageData | null = null;
   const CACHE_MS = 60_000;
-  let footerOn = false;
-  let _tui: any = null;
   let thinkingLevel = "off";
 
-  async function getUsage(): Promise<UsageData> {
-    if (usage && Date.now() - usage._ts < CACHE_MS) return usage;
-    usage = await fetchUsage();
-    return usage;
-  }
-
-  function isVolcenginePlan(ctx: any) {
-    return ctx.model?.provider === "volcengine-plan";
-  }
-
-  function trigger() {
-    if (_tui) setTimeout(() => _tui.requestRender?.(), 0);
-  }
-
-  async function refresh(ctx: any) {
-    if (!hasSession()) return;
-    if (!isVolcenginePlan(ctx)) {
-      if (usage) { usage = null; toggleFooter(ctx); }
-      return;
-    }
-    try { await getUsage(); trigger(); } catch { /* silent */ }
-  }
-
-  // ── Footer ──────────────────────────────────────────────────
-  function toggleFooter(ctx: any) {
-    if (isVolcenginePlan(ctx) && hasSession()) {
-      if (!footerOn) {
-        ctx.ui.setFooter(buildFooter(ctx));
-        footerOn = true;
-      }
-    } else {
-      if (footerOn) {
-        _tui = null;
-        ctx.ui.setFooter(undefined as any);
-        footerOn = false;
-      }
-    }
-  }
-
-  function formatTokens(count: number): string {
-    if (count < 1000) return String(count);
-    if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
-    if (count < 1e6) return `${Math.round(count / 1000)}k`;
-    if (count < 1e7) return `${(count / 1e6).toFixed(1)}M`;
-    return `${Math.round(count / 1e6)}M`;
-  }
-
-  function buildFooter(ctx: any) {
-    return (tui: any, theme: any, fd: any) => {
-      _tui = tui;
-      const unsub = fd.onBranchChange(() => tui.requestRender());
-      return {
-        dispose: () => { unsub(); _tui = null; },
-        invalidate() {},
-        render(width: number): string[] {
-          const sm = ctx.sessionManager;
-
-          // ── Line 1: pwd ──────────────────────────────────
-          const home = process.env.HOME || process.env.USERPROFILE || "";
-          let pwd = ctx.cwd || sm.getCwd?.() || "";
-          if (home && pwd.startsWith(home)) pwd = "~" + pwd.slice(home.length);
-          const branch = fd.getGitBranch();
-          if (branch) pwd += ` (${branch})`;
-          const sname = sm.getSessionName?.();
-          if (sname) pwd += ` • ${sname}`;
-          const ln1 = truncateToWidth(theme.fg("dim", pwd), width, theme.fg("dim", "..."));
-
-          // ── Line 2: stats ────────────────────────────────
-          let ti = 0, to = 0, tc = 0;
-          for (const e of sm.getEntries()) {
-            if (e.type === "message" && e.message?.role === "assistant") {
-              const u = (e.message as AssistantMessage).usage;
-              ti += u.input; to += u.output;
-              tc += u.cost.total;
-            }
-          }
-          const parts: string[] = [];
-          if (ti) parts.push(`↑${formatTokens(ti)}`);
-          if (to) parts.push(`↓${formatTokens(to)}`);
-          if (tc) parts.push(`$${tc.toFixed(3)}`);
-
-          // Volcengine Coding Plan usage
-          if (usage) {
-            for (const q of usage.quotas) {
-              const label = LEVEL_LABELS[q.level] || q.level;
-              const sev = usageSeverity(q.percent, q.level, q.resetTimestamp);
-              const flag = sev === 2 ? "!!" : sev === 1 ? "!" : "";
-              parts.push(`${flag}${label}:${q.percent}%`);
-            }
-          }
-
-          let left = parts.join(" ");
-
-          // Right side: model info
-          const m = ctx.model;
-          let right = m?.id || "no-model";
-          if (m?.reasoning) {
-            const tl = thinkingLevel;
-            right = tl === "off" ? `${right} • thinking off` : `${right} • ${tl}`;
-          }
-          const withProv = `(volcengine-plan) ${right}`;
-          if (visibleWidth(left) + 2 + visibleWidth(withProv) <= width) {
-            right = withProv;
-          }
-
-          const lw = visibleWidth(left);
-          const rw = visibleWidth(right);
-
-          let ln2: string;
-          if (lw + 2 + rw <= width) {
-            ln2 = left + " ".repeat(width - lw - rw) + right;
-          } else if (lw + 2 < width) {
-            ln2 = truncateToWidth(left + "  " + right, width, "");
-          } else {
-            ln2 = truncateToWidth(left, width, "...");
-          }
-
-          return [ln1, theme.fg("dim", ln2)];
-        },
-      };
-    };
-  }
-
-  // ── Events ─────────────────────────────────────────────────
-  pi.on("session_start", async (_e, ctx) => {
+  // ── Events (no auto-fetch — only /volcengine-usage command launches browser) ──
+  pi.on("session_start", async (_e, _ctx) => {
     thinkingLevel = pi.getThinkingLevel?.() || "off";
-    toggleFooter(ctx);
-    if (hasSession()) refresh(ctx);
-  });
-
-  pi.on("model_select", async (_e, ctx) => {
-    toggleFooter(ctx);
-    if (hasSession()) refresh(ctx);
   });
 
   pi.on("thinking_level_select", async (event: any) => {
     thinkingLevel = event.level || "off";
-    trigger();
-  });
-
-  pi.on("agent_end", async (_e, ctx) => {
-    if (hasSession()) refresh(ctx);
   });
 
   // ── /volcengine-usage ──────────────────────────────────────────
@@ -279,9 +140,9 @@ export default function (pi: ExtensionAPI) {
     description: "Show Volcengine Coding Plan usage",
     handler: async (_args, ctx) => {
       try {
-        const d = await getUsage();
+        usage = await fetchUsage();
         const lines = ["══ Volcengine Coding Plan Usage ══"];
-        for (const q of d.quotas) {
+        for (const q of usage.quotas) {
           const label = LEVEL_LABELS[q.level] || q.level;
           const sev = usageSeverity(q.percent, q.level, q.resetTimestamp);
           const flag = sev === 2 ? "!!" : sev === 1 ? "!" : "";
