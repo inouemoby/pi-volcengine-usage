@@ -31,7 +31,7 @@ Or via `settings.json`:
 Run in pi:
 
 ```
-/volcengine-login
+/volcengine-usage-login
 ```
 
 This will open a visible Chromium browser window. Log in to your Volcengine account normally in the browser — it will auto-close after login and save your session state.
@@ -41,8 +41,8 @@ This will open a visible Chromium browser window. Log in to your Volcengine acco
 | Command | Description |
 |---------|-------------|
 | `/volcengine` | Show detailed usage (bar chart + percentages + reset countdown) |
-| `/volcengine-login` | Open browser to log in and save session |
-| `/volcengine-logout` | Clear saved session |
+| `/volcengine-usage-login` | Open browser to log in and save session (separate from provider API key login) |
+| `/volcengine-usage-logout` | Clear saved session |
 
 ## Preview
 

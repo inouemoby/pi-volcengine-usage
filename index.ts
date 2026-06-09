@@ -301,8 +301,8 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // ── /volcengine-login ────────────────────────────────────────
-  pi.registerCommand("volcengine-login", {
+  // ── /volcengine-usage-login ────────────────────────────────────
+  pi.registerCommand("volcengine-usage-login", {
     description: "Open browser to log in to Volcengine console",
     handler: async (_args, ctx) => {
       ctx.ui.notify("Opening browser for login...", "info");
@@ -354,8 +354,8 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // ── /volcengine-logout ───────────────────────────────────────
-  pi.registerCommand("volcengine-logout", {
+  // ── /volcengine-usage-logout ───────────────────────────────────
+  pi.registerCommand("volcengine-usage-logout", {
     description: "Clear saved session",
     handler: async (_args, ctx) => {
       const sessionPath = getSessionPath();
