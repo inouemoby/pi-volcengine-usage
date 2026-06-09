@@ -50,6 +50,7 @@ const LEVEL_WINDOWS: Record<string, number> = {
 
 /** Returns severity: 0=normal, 1=above expected, 2=critical */
 function usageSeverity(pct: number, level: string, resetTimestamp: number): number {
+  if (resetTimestamp <= 0) return 0; // no active window
   const windowMs = LEVEL_WINDOWS[level] || 5 * 60 * 60 * 1000;
   const remainingMs = resetTimestamp * 1000 - Date.now();
   const elapsedMs = Math.max(0, windowMs - remainingMs);
@@ -144,13 +145,20 @@ export default function (pi: ExtensionAPI) {
         const lines = ["══ Volcengine Coding Plan Usage ══"];
         for (const q of usage.quotas) {
           const label = LEVEL_LABELS[q.level] || q.level;
-          const sev = usageSeverity(q.percent, q.level, q.resetTimestamp);
-          const flag = sev === 2 ? "!!" : sev === 1 ? "!" : "";
+          const pct = Math.round(q.percent * 10) / 10;
           const bar =
-            "█".repeat(Math.min(20, Math.round(q.percent / 5))) +
-            "░".repeat(Math.max(0, 20 - Math.round(q.percent / 5)));
-          const resetStr = humanDuration(q.resetTimestamp * 1000 - Date.now());
-          lines.push(`${flag}${label}  ${bar}  ${q.percent}%  resets ${resetStr}`);
+            "█".repeat(Math.min(20, Math.round(pct / 5))) +
+            "░".repeat(Math.max(0, 20 - Math.round(pct / 5)));
+          // ResetTimestamp: -1 means no active window
+          let resetStr = "-";
+          if (q.resetTimestamp > 0) {
+            const sev = usageSeverity(pct, q.level, q.resetTimestamp);
+            const flag = sev === 2 ? "!!" : sev === 1 ? "!" : "";
+            resetStr = `resets ${humanDuration(q.resetTimestamp * 1000 - Date.now())}`;
+            lines.push(`${flag}${label}  ${bar}  ${pct}%  ${resetStr}`);
+          } else {
+            lines.push(`${label}  ${bar}  ${pct}%  (no active window)`);
+          }
         }
         ctx.ui.notify(lines.join("\n"), "info");
       } catch (err: any) {
