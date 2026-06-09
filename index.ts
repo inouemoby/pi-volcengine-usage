@@ -1,4 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { chromium } from "playwright";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "fs";
 import { join, dirname } from "path";
@@ -125,7 +127,109 @@ async function fetchUsage(): Promise<UsageData> {
 export default function (pi: ExtensionAPI) {
   let usage: UsageData | null = null;
   const CACHE_MS = 60_000;
+  let footerOn = false;
+  let _tui: any = null;
   let thinkingLevel = "off";
+  let footerCtx: any = null;
+
+  function formatTokens(count: number): string {
+    if (count < 1000) return String(count);
+    if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
+    if (count < 1e6) return `${Math.round(count / 1000)}k`;
+    if (count < 1e7) return `${(count / 1e6).toFixed(1)}M`;
+    return `${Math.round(count / 1e6)}M`;
+  }
+
+  function trigger() { if (_tui) setTimeout(() => _tui.requestRender?.(), 0); }
+
+  // ── Footer (only shows cached data — no auto-fetch) ────────
+  function buildFooter() {
+    const ctx = footerCtx;
+    return (tui: any, theme: any, fd: any) => {
+      _tui = tui;
+      const unsub = fd.onBranchChange(() => tui.requestRender());
+      return {
+        dispose: () => { unsub(); _tui = null; },
+        invalidate() {},
+        render(width: number): string[] {
+          const sm = ctx.sessionManager;
+
+          // ── Line 1: pwd ──────────────────────────────────
+          const home = process.env.HOME || process.env.USERPROFILE || "";
+          let pwd = ctx.cwd || sm.getCwd?.() || "";
+          if (home && pwd.startsWith(home)) pwd = "~" + pwd.slice(home.length);
+          const branch = fd.getGitBranch();
+          if (branch) pwd += ` (${branch})`;
+          const sname = sm.getSessionName?.();
+          if (sname) pwd += ` • ${sname}`;
+          const ln1 = truncateToWidth(theme.fg("dim", pwd), width, theme.fg("dim", "..."));
+
+          // ── Line 2: stats ────────────────────────────────
+          let ti = 0, to = 0, tc = 0;
+          for (const e of sm.getEntries()) {
+            if (e.type === "message" && e.message?.role === "assistant") {
+              const u = (e.message as AssistantMessage).usage;
+              ti += u.input; to += u.output;
+              tc += u.cost.total;
+            }
+          }
+          const parts: string[] = [];
+          if (ti) parts.push(`↑${formatTokens(ti)}`);
+          if (to) parts.push(`↓${formatTokens(to)}`);
+          if (tc) parts.push(`$${tc.toFixed(3)}`);
+
+          // Volcengine Coding Plan usage (cached data only)
+          if (usage) {
+            for (const q of usage.quotas) {
+              if (q.resetTimestamp <= 0) continue; // skip no active window
+              const label = LEVEL_LABELS[q.level] || q.level;
+              const sev = usageSeverity(q.percent, q.level, q.resetTimestamp);
+              const flag = sev === 2 ? "!!" : sev === 1 ? "!" : "";
+              parts.push(`${flag}${label}:${Math.round(q.percent * 10) / 10}%`);
+            }
+          }
+
+          let left = parts.join(" ");
+
+          // Right side: model info
+          const m = ctx.model;
+          let right = m?.id || "no-model";
+          if (m?.reasoning) {
+            const tl = thinkingLevel;
+            right = tl === "off" ? `${right} • thinking off` : `${right} • ${tl}`;
+          }
+          const withProv = `(volcengine-plan) ${right}`;
+          if (visibleWidth(left) + 2 + visibleWidth(withProv) <= width) {
+            right = withProv;
+          }
+
+          const lw = visibleWidth(left);
+          const rw = visibleWidth(right);
+
+          let ln2: string;
+          if (lw + 2 + rw <= width) {
+            ln2 = left + " ".repeat(width - lw - rw) + right;
+          } else if (lw + 2 < width) {
+            ln2 = truncateToWidth(left + "  " + right, width, "");
+          } else {
+            ln2 = truncateToWidth(left, width, "...");
+          }
+
+          return [ln1, theme.fg("dim", ln2)];
+        },
+      };
+    };
+  }
+
+  function updateFooter(ctx: any) {
+    footerCtx = ctx;
+    if (!footerOn) {
+      ctx.ui.setFooter(buildFooter());
+      footerOn = true;
+    } else {
+      trigger();
+    }
+  }
 
   // ── Events (no auto-fetch — only /volcengine-usage command launches browser) ──
   pi.on("session_start", async (_e, _ctx) => {
@@ -150,17 +254,18 @@ export default function (pi: ExtensionAPI) {
             "█".repeat(Math.min(20, Math.round(pct / 5))) +
             "░".repeat(Math.max(0, 20 - Math.round(pct / 5)));
           // ResetTimestamp: -1 means no active window
-          let resetStr = "-";
           if (q.resetTimestamp > 0) {
             const sev = usageSeverity(pct, q.level, q.resetTimestamp);
             const flag = sev === 2 ? "!!" : sev === 1 ? "!" : "";
-            resetStr = `resets ${humanDuration(q.resetTimestamp * 1000 - Date.now())}`;
-            lines.push(`${flag}${label}  ${bar}  ${pct}%  ${resetStr}`);
+            const resetStr = humanDuration(q.resetTimestamp * 1000 - Date.now());
+            lines.push(`${flag}${label}  ${bar}  ${pct}%  resets ${resetStr}`);
           } else {
             lines.push(`${label}  ${bar}  ${pct}%  (no active window)`);
           }
         }
         ctx.ui.notify(lines.join("\n"), "info");
+        // Update footer with fresh data
+        updateFooter(ctx);
       } catch (err: any) {
         ctx.ui.notify(`Volcengine Usage: ${err.message}`, "error");
       }
@@ -221,6 +326,12 @@ export default function (pi: ExtensionAPI) {
       const sessionPath = getSessionPath();
       if (existsSync(sessionPath)) unlinkSync(sessionPath);
       usage = null;
+      if (footerOn) {
+        ctx.ui.setFooter(undefined as any);
+        footerOn = false;
+        _tui = null;
+        footerCtx = null;
+      }
       ctx.ui.notify("✓ Session cleared.", "success");
     },
   });
