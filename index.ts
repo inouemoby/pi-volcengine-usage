@@ -224,9 +224,8 @@ export default function (pi: ExtensionAPI) {
           // Volcengine Coding Plan usage
           if (usage) {
             for (const q of usage.quotas) {
-              if (q.resetTimestamp <= 0) continue; // skip no active window
               const label = LEVEL_LABELS[q.level] || q.level;
-              const sev = usageSeverity(q.percent, q.level, q.resetTimestamp);
+              const sev = q.resetTimestamp <= 0 ? 0 : usageSeverity(q.percent, q.level, q.resetTimestamp);
               const flag = sev === 2 ? "!!" : sev === 1 ? "!" : "";
               parts.push(`${flag}${label}:${q.percent}%`);
             }
