@@ -138,6 +138,10 @@ export default function (pi: ExtensionAPI) {
   let footerGeneration = 0;
   let _tui: any = null;
   let thinkingLevel = "off";
+  const IDLE_REFRESH_MS = 5 * 60 * 1000;  // 闲时定时刷新: 5 分钟
+  let latestCtx: any = null;              // 最近一次事件拿到的 ctx,供定时器使用
+  let agentBusy = false;                  // agent 生成中 = true,定时刷新只在闲时执行
+  let idleTimer: ReturnType<typeof setInterval> | null = null;
 
   async function getUsage(): Promise<UsageData> {
     if (usage && Date.now() - usage._ts < CACHE_MS) return usage;
@@ -223,9 +227,12 @@ export default function (pi: ExtensionAPI) {
             }
           }
           const parts: string[] = [];
-          if (ti) parts.push(`↑${formatTokens(ti)}`);
-          if (to) parts.push(`↓${formatTokens(to)}`);
-          if (tc) parts.push(`$${tc.toFixed(3)}`);
+          const cachePartIndexes: number[] = [];
+          const tokenPartIndexes: number[] = [];
+          let costPartIndex = -1;
+          if (ti) { tokenPartIndexes.push(parts.length); parts.push(`↑${formatTokens(ti)}`); }
+          if (to) { tokenPartIndexes.push(parts.length); parts.push(`↓${formatTokens(to)}`); }
+          if (tc) { costPartIndex = parts.length; parts.push(`$${tc.toFixed(3)}`); }
 
           // Context % (without color, just show it)
           const cu = ctx.getContextUsage();
@@ -261,6 +268,21 @@ export default function (pi: ExtensionAPI) {
             right = withProv;
           }
 
+          // 宽度不足时的省略顺序 (与 pi-codex-usage 一致): 供应商名 → 缓存计数 → 费用 → 累计 token
+          const fits = () => visibleWidth(left) + 2 + visibleWidth(right) <= width;
+          if (!fits()) {
+            for (const index of cachePartIndexes) parts[index] = "";
+            left = parts.filter(Boolean).join(" ");
+          }
+          if (!fits() && costPartIndex >= 0) {
+            parts[costPartIndex] = "";
+            left = parts.filter(Boolean).join(" ");
+          }
+          if (!fits() && tokenPartIndexes.length > 0) {
+            for (const index of tokenPartIndexes) parts[index] = "";
+            left = parts.filter(Boolean).join(" ");
+          }
+
           const lw = visibleWidth(left);
           const rw = visibleWidth(right);
 
@@ -279,16 +301,63 @@ export default function (pi: ExtensionAPI) {
     };
   }
 
-  // ── Events (auto-refresh) ─────────────────────────────────
+  // ── Idle timer (每 5 分钟闲时刷新) ───────────────────────
+  function startIdleTimer() {
+    stopIdleTimer();
+    idleTimer = setInterval(() => {
+      if (agentBusy) return;                    // 生成中,跳过本轮
+      const ctx = latestCtx;
+      if (!ctx || !isVolcenginePlan(ctx) || !hasSession()) return;  // 只在对应 provider 下刷新
+      refresh(ctx);
+    }, IDLE_REFRESH_MS);
+    (idleTimer as any).unref?.();               // 不阻止进程退出
+  }
+
+  function stopIdleTimer() {
+    if (idleTimer) { clearInterval(idleTimer); idleTimer = null; }
+  }
+
+  // ── Events ─────────────────────────────────────────────────
   pi.on("session_start", async (_e, ctx) => {
+    latestCtx = ctx;
     thinkingLevel = pi.getThinkingLevel?.() || "off";
+    footerOn = false;                            // 强制重建 footer,确保闭包捕获新 ctx
     toggleFooter(ctx, true);
+    if (hasSession()) refresh(ctx);
+    startIdleTimer();
+  });
+
+  pi.on("session_shutdown", async () => {
+    stopIdleTimer();
+    latestCtx = null;
+  });
+
+  pi.on("agent_start", async (_e, ctx) => { latestCtx = ctx; agentBusy = true; });
+  pi.on("agent_end", async (_e, ctx) => {
+    latestCtx = ctx;
+    agentBusy = false;
     if (hasSession()) refresh(ctx);
   });
 
-  pi.on("model_select", async (_e, ctx) => { toggleFooter(ctx, true); if (hasSession()) refresh(ctx); });
-  pi.on("thinking_level_select", async (event: any) => { thinkingLevel = event.level || "off"; trigger(); });
-  pi.on("agent_end", async (_e, ctx) => { if (hasSession()) refresh(ctx); });
+  pi.on("model_select", async (_e, ctx) => {
+    latestCtx = ctx;
+    if (isVolcenginePlan(ctx)) {
+      // 延迟到 macrotask: 让排在我们后面的扩展先完成卸载,我们再挂载,避免被覆盖
+      setTimeout(() => {
+        const currentCtx = latestCtx;
+        if (!currentCtx || !isVolcenginePlan(currentCtx)) return;
+        try {
+          toggleFooter(currentCtx, true);
+          if (hasSession()) refresh(currentCtx);
+        } catch { /* session or footer was disposed */ }
+      }, 0);
+    } else {
+      // 切走时立即卸载自己,给目标 provider 的扩展让位
+      toggleFooter(ctx);
+      if (hasSession()) refresh(ctx);
+    }
+  });
+  pi.on("thinking_level_select", async (event: any) => { thinkingLevel = event?.level || "off"; trigger(); });
 
   // ── /volcengine ───────────────────────────────────────────────
   pi.registerCommand("volcengine", {
